@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Evgenii Kozlov [dsuchka@gmail.com]
+// Licensed under the Business Source License 1.1.
+
+// Usage is permitted for non-commercial purposes only, under the terms of BUSL-1.1.
+// Change Date: 2030-01-01
+// On the Change Date, this license will automatically convert to GPL-3.0-or-later,
+// granting full rights under the GNU General Public License.
+//
+// For more information, see https://github.com/mariadb/bsl
+//                           https://opensource.org/licenses/BUSL-1.1
+//                           https://spdx.org/licenses/BUSL-1.1.html
+//                           https://www.hashicorp.com/en/bsl
+
+
+#include "basic.huff"
+#include "constants.huff"
+
+
+#define macro REVERT_ERROR_NO_ARGS() = takes(1) returns(0) {
+    // Input stack:         // [<__error_selector>]
+    ZERO() mstore           // []
+    0x04 0x1C revert
+}
+

@@ -1,0 +1,217 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Evgenii Kozlov [dsuchka@gmail.com]
+// Licensed under the Business Source License 1.1.
+
+// Usage is permitted for non-commercial purposes only, under the terms of BUSL-1.1.
+// Change Date: 2030-01-01
+// On the Change Date, this license will automatically convert to GPL-3.0-or-later,
+// granting full rights under the GNU General Public License.
+//
+// For more information, see https://github.com/mariadb/bsl
+//                           https://opensource.org/licenses/BUSL-1.1
+//                           https://spdx.org/licenses/BUSL-1.1.html
+//                           https://www.hashicorp.com/en/bsl
+
+
+#include "helper.huff"
+#include "external.huff"
+
+
+#define macro CONSTRUCTOR() = takes(0) returns(0) {
+    // add extra 2 bytes to main code size (jump table)
+    __codesize(MAIN) 0x02 add           // [<c1_sz>]
+    __codesize(CONSTRUCTOR)             // [<c0_sz>, <c1_sz>]
+    codesize                            // [<(c0+c1+arg)_sz>, <c0_sz>, <c1_sz>]
+    sub                                 // [<(c1+arg)_sz>, <c1_sz>]
+    dup2                                // [<c1_sz>, <(c1+arg)_sz>, <c1_sz>]
+    dup2 sub                            // [<arg_sz>, <(c1+arg)_sz>, <c1_sz>]
+    0x40 eq                             // [<arg_sz == 2 words>, <(c1+arg)_sz>, <c1_sz>]
+    load_and_fix_code jumpi             // [<(c1+arg)_sz>, <c1_sz>]
+
+    __FUNC_SIG(WrongArgument)           // [<__error_selector>, | ...]
+    REVERT_ERROR_NO_ARGS()
+
+load_and_fix_code:
+    // Input stack:                     // [<(c1+arg)_sz>, <c1_sz>]
+    __codesize(CONSTRUCTOR)             // [<c0_sz>, <(c1+arg)_sz>, <c1_sz>]
+    ZERO()                              // [0, <c0_sz>, <(c1+arg)_sz>, <c1_sz>]
+    codecopy                            // [<c1_sz>]
+                                        // * mem[0x00:...] = <contract_code...> <arg1> <arg2>
+
+    0x01 dup1                           // [1, 1, <c1_sz>]
+    0xA0 shl                            // [2**160, 1, <c1_sz>]
+    sub                                 // [<addr_mask>, <c1_sz>]
+
+    dup2                                // [<args_ptr>, <addr_mask>, ...]
+    dup1 mload                          // [<dirty_safe_user>, <args_ptr>, <addr_mask>, ...]
+    dup3 and                            // [<safe_user>, <args_ptr>, <addr_mask>, ...]
+
+    swap1                               // [<args_ptr>, <safe_user>, <addr_mask>, ...]
+    0x20 add mload                      // [<dirty_impl_addr>, <safe_user>, <addr_mask>, ...]
+    dup3 and                            // [<impl_addr>, <safe_user>, <addr_mask>, ...]
+    [IMPLEMENTATION_SLOT] sstore        // [<safe_user>, <addr_mask>, ...]
+
+    0x0A                                // [10, <safe_user>, <addr_mask>, <c1_sz>]
+    __codesize(MAIN)                    // [<loc_ptr>, 10, <safe_user>, <addr_mask>, <c1_sz>]
+    mload                               // [<loc____>, 10, <safe_user>, <addr_mask>, <c1_sz>]
+    0xF0 shr                            // [<safe_user_loc-2>, 10, <safe_user>, <addr_mask>, ...]
+    sub                                 // [<safe_user_loc-12>, <safe_user>, <addr_mask>, ...]
+    swap2                               // [<addr_mask>, <safe_user>, <safe_user_loc-12>, ...]
+    dup3 mload                          // [<xxxx_1122334455>, <addr_mask>, <safe_user>, <safe_user_loc-12>, ...]
+    swap1                               // [<addr_mask>, <xxxx_1122334455>, <safe_user>, <safe_user_loc-12>, ...]
+    not and                             // [<xxxx_0000000000>, <safe_user>, <safe_user_loc-12>, ...]
+    or                                  // [<xxxx_safe_user>, <safe_user_loc-12>, <c1_sz>]
+    swap1 mstore                        // [<c1_sz>]
+
+    // remove tail 4 bytes (2 for [push 0x20] and 2 for jump table)
+    0x04 swap1 sub                      // [<sz>]
+    ZERO()                              // [<sz>, 0]
+    return                              // []
+}
+
+#define macro MAIN() = takes(0) returns(0) {
+    // load whole payload (args) into memory[0x00:calldatasize]
+    // and get selector (first 4 bytes) and check it against special
+    // 'SafeCall' value (0x5AFECA11)
+
+    calldatasize                        // [<sz>]
+    DOUBLE_ZERO()                       // [0, 0, <sz>]
+    calldatacopy                        // []
+
+    ZERO() mload                        // [<sel...>]
+    0xE0 shr                            // [<sel>]
+    0x5AFECA11 xor                      // [<isNotSafeCall>]
+    delegate_to_impl_whole_mem jumpi    // []
+
+    // check SafeCall args: <0x5AFECA11(4)> <target(20)> <signature(65)> <payload...>
+
+    0x59 dup1                           // [(4+20+65), (4+20+65)]
+    calldatasize                        // [<sz>, <min_sz>, <min_sz>]
+    lt                                  // [(sz < min_sz>), <min_sz>]
+    do_revert_wrong_arg jumpi           // [<min_sz>]
+
+    // load call addr (target)
+    0x04 mload                          // [<target__>, <min_sz>]
+    0x60 shr                            // [<target>, <min_sz>]
+    swap1                               // [<min_sz>, <target>]
+
+    // use memory region behind the loaded data
+    calldatasize                        // [<free_mem_ptr(fmp)>, <min_sz>, <target>]
+                                        // NOTE: min_sz == 0x59 == payload_ptr
+
+    // load nonce and evaluate hash to check sign
+    [NONCE_SLOT] sload                  // [<nonce>, <fmp>, <min_sz>, <target>]
+    dup2 mstore                         // [<fmp>, <min_sz>, <target>]
+                                        // * mem[fmp:fmp+0x20] = <nonce>
+
+    caller                              // [<caller>, <fmp>, <min_sz>, <target>]
+    dup2 0x20 add mstore                // [<fmp>, <min_sz>, <target>]
+                                        // * mem[fmp:fmp+0x40] = <nonce> <caller>
+
+    address                             // [<self>, <fmp>, <min_sz>, <target>]
+    dup2 0x40 add mstore                // [<fmp>, <min_sz>, <target>]
+                                        // * mem[fmp:fmp+0x60] = <nonce> <caller> <self>
+
+    dup3                                // [<target>, <fmp>, <min_sz>, <target>]
+    dup2 0x60 add mstore                // [<fmp>, <min_sz>, <target>]
+                                        // * mem[fmp:fmp+0x80] = <nonce> <caller> <self> <target>
+
+    dup2 dup2 sub                       // [<payload_sz>, <fmp>, <min_sz>, <target>]
+    0x80 add                            // [<data_sz>, <fmp>, <min_sz>, <target>]
+    dup3                                // [<data_ptr>, <data_sz>, <fmp>, <min_sz>, <target>]
+    sha3                                // [<hash>, <fmp>, <min_sz>, <target>]
+                                        // NOTE: keccak256(<payload...> <nonce> <caller> <self> <target>)
+
+    // evaluate ecrecover (call precomputed contract 0x01)
+    dup2                                // [<fmp>, <hash>, <fmp>, <min_sz>, <target>]
+    mstore                              // [<fmp>, <min_sz>, <target>]
+                                        // * mem[fmp:fmp+0x20] = <hash>
+    0x58 mload                          // [<v__>, <fmp>, <min_sz>, <target>]
+    ZERO() byte                         // [<v>, <fmp>, <min_sz>, <target>]
+    dup2 0x20 add mstore                // [<fmp>, <min_sz>, <target>]
+                                        // * mem[fmp:fmp+0x40] = <hash> <v>
+    0x18 mload                          // [<r>, <fmp>, <min_sz>, <target>]
+    dup2 0x40 add mstore                // [<fmp>, <min_sz>, <target>]
+                                        // * mem[fmp:fmp+0x60] = <hash> <v> <r>
+    0x38 mload                          // [<s>, <fmp>, <min_sz>, <target>]
+    dup2 0x60 add mstore                // [<fmp>, <min_sz>, <target>]
+                                        // * mem[fmp:fmp+0x80] = <hash> <v> <r> <s>
+
+    0x20 ZERO()                         // [<out_ptr>, <out_sz>, | <fmp>, <min_sz>, <target>]
+    0x80 dup4                           // [<in_ptr>, <in_sz>, <out_ptr>, <out_sz>, | <fmp>, <min_sz>, <target>]
+    0x01 gas                            // [<gas>, <ecrecover_addr>, <in_ptr>, <in_sz>, <out_ptr>, <out_sz>, | ...]
+    staticcall                          // [<res>, <fmp>, <min_sz>, <target>]
+    check_safe_user jumpi               // [<fmp>, <min_sz>, <target>]
+
+    __FUNC_SIG(WrongSignature)          // [<__error_selector>, | ...]
+    REVERT_ERROR_NO_ARGS()
+
+check_safe_user:
+    // Input stack:                     // [<fmp>, <min_sz>, <target>]
+                                        // * mem[0x00:0x20] = <dirty_sign_user **>
+                                        // (** for Tron the address is prefixed with 0x41)
+
+    // push immutable placeholder (20 bytes)
+    0x1122334455112233445511223344551122334455
+                                        // [<safe_user>, <fmp>, <min_sz>, <target>]
+
+    ZERO() mload                        // [<dirty_sign_user>, <safe_user>, <fmp>, <min_sz>, <target>]
+    0x01 dup1 0xA0 shl sub and          // [<sign_user>, <safe_user>, <fmp>, <min_sz>, <target>]
+    eq                                  // [<isUserValid>, <fmp>, <min_sz>, <target>]
+    safe_user_valid jumpi               // [<fmp>, <min_sz>, <target>]
+
+    __FUNC_SIG(Forbidden)               // [<__error_selector>, | ...]
+    REVERT_ERROR_NO_ARGS()
+
+safe_user_valid:
+    // Input stack:                     // [<fmp>, <min_sz>, <target>]
+
+    // increment nonce
+    [NONCE_SLOT] sload                  // [<nonce>, <fmp>, <min_sz>, <target>]
+    0x01 add                            // [<nonce++>, <fmp>, <min_sz>, <target>]
+    [NONCE_SLOT] sstore                 // [<fmp>, <min_sz>, <target>]
+
+    // prepare delegate call
+    DOUBLE_ZERO()                       // [0, 0, <fmp>, <min_sz>, <target>]
+    dup4 dup4 sub                       // [<payload_sz>, 0, 0, <fmp>, <min_sz>, <target>]
+    dup5                                // [<payload_ptr>, <payload_sz>, 0, 0, <fmp>, <min_sz>, <target>]
+    dup7                                // [<target>, <payload_ptr>, <payload_sz>, 0, 0, | ...]
+    delegate_to_addr_with_mem jump
+
+do_revert_wrong_arg:
+    __FUNC_SIG(WrongArgument)           // [<__error_selector>, | ...]
+    REVERT_ERROR_NO_ARGS()
+
+delegate_to_impl_whole_mem:
+    // Input stack:                     // []
+    DOUBLE_ZERO()                       // [0, 0]
+    calldatasize ZERO()                 // [<args_ptr>, <args_sz>, 0, 0]
+    [IMPLEMENTATION_SLOT]               // [<impl_slot>, <args_ptr>, <args_sz>, 0, 0]
+    sload                               // [<addr>, <args_ptr>, <args_sz>, 0, 0]
+    // Fall down to <delegate_to_addr_with_mem>
+
+delegate_to_addr_with_mem:
+    // Input stack:                     // [<addr>, <args_ptr>, <args_sz>, 0, 0]
+    gas                                 // [<gas>, <addr>, <args_ptr>, <args_sz>, 0, 0]
+    delegatecall                        // [<res>]
+    returndatasize                      // [<sz>, <res>]
+    DOUBLE_ZERO()                       // [0, 0, <sz>, <res>]
+    returndatacopy                      // [<res>]
+    return_result jumpi                 // []
+
+    returndatasize ZERO()               // [0, <sz>]
+    revert
+
+return_result:
+    returndatasize ZERO()               // [0, <sz>]
+    return
+
+// immutable locations table (2 bytes: push 0x02)
+    __tablesize(IMMUTABLE_VARS__JUMP_TABLE)
+}
+
+// 1 location x 2 bytes = total 2 bytes
+#define jumptable__packed IMMUTABLE_VARS__JUMP_TABLE {
+    check_safe_user
+}
+
