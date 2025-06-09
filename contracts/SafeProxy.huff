@@ -51,6 +51,9 @@ load_and_fix_code:
     dup3 and                            // [<impl_addr>, <safe_user>, <addr_mask>, ...]
     [IMPLEMENTATION_SLOT] sstore        // [<safe_user>, <addr_mask>, ...]
 
+    // also save caller (creator) address at slot 0 (usually owner slot)
+    caller ZERO() sstore                // [<safe_user>, <addr_mask>, ...]
+
     0x0A                                // [10, <safe_user>, <addr_mask>, <c1_sz>]
     __codesize(MAIN)                    // [<loc_ptr>, 10, <safe_user>, <addr_mask>, <c1_sz>]
     mload                               // [<loc____>, 10, <safe_user>, <addr_mask>, <c1_sz>]
@@ -65,7 +68,7 @@ load_and_fix_code:
 
     // remove tail 4 bytes (2 for [push 0x20] and 2 for jump table)
     0x04 swap1 sub                      // [<sz>]
-    ZERO()                              // [<sz>, 0]
+    ZERO()                              // [0, <sz>]
     return                              // []
 }
 
