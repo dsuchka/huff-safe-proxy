@@ -19,3 +19,11 @@
 // keccak256('SafeProxy::nonce')[:8]
 #define constant NONCE_SLOT = 0x132d3bbee0e78cfa
 
+// echo -n 'SafeProxy' | xxd -p
+#define constant CONTRACT_NAME_STR = 0x5361666550726f7879
+#define constant CONTRACT_NAME_LEN = 0x9
+
+// echo -n '1.0.0' | xxd -p
+#define constant CONTRACT_VERSION_STR = 0x312e302e30
+#define constant CONTRACT_VERSION_LEN = 0x5
+

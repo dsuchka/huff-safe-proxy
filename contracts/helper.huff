@@ -23,3 +23,27 @@
     0x04 0x1C revert
 }
 
+
+#define macro RETURN_SHORT_MESSAGE() = takes(2) returns(0) {
+    // Input stack: [<sz>, <__str>]
+    0x20                                // [0x20, <sz>, <__str>]
+    dup1 ZERO()                         // [0x00, 0x20, 0x20, <sz>, <__str>]
+    mstore                              // [0x20, <sz>, <__str>]
+                                        // | mem[0:0x60]=[00..20]
+
+    dup2 dup2                           // [0x20, <sz>, 0x20, <sz>, <__str>]
+    mstore                              // [0x20, <sz>, <__str>]
+                                        // | mem[0:0x60]=[00..20][00..<sz>]
+
+    sub                                 // [<0x20-sz>, <__str>]
+    0x03 shl                            // [<(0x20-sz)*8>, <__str>]
+    shl                                 // [<str__>]
+    0x40 mstore                         // []
+                                        // | mem[0:0x60]=[00..20][00..<sz>][<str__>]
+    0x60 ZERO() return
+}
+
+#define macro PUSH_ARGS_FOR_RETURN_SHORT_MESSAGE(str, len, jmp_to) = takes(0) returns(0) {
+    <str> <len> <jmp_to> jump
+}
+

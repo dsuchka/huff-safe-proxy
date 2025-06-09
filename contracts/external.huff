@@ -17,3 +17,6 @@
 #define error WrongArgument()
 #define error WrongSignature()
 
+#define function contract_name() view returns(string)
+#define function contract_version() view returns(string)
+

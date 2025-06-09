@@ -75,16 +75,70 @@ load_and_fix_code:
 #define macro MAIN() = takes(0) returns(0) {
     // load whole payload (args) into memory[0x00:calldatasize]
     // and get selector (first 4 bytes) and check it against special
-    // 'SafeCall' value (0x5AFECA11)
+    // `SafeCall` value (0x5AFECA11), 'contract_name()' (0xd9479692),
+    // and 'contract_version()' (0xb32c65c8) values
 
     calldatasize                        // [<sz>]
     DOUBLE_ZERO()                       // [0, 0, <sz>]
     calldatacopy                        // []
 
+    // get selector
     ZERO() mload                        // [<sel...>]
     0xE0 shr                            // [<sel>]
-    0x5AFECA11 xor                      // [<isNotSafeCall>]
-    delegate_to_impl_whole_mem jumpi    // []
+
+    // use magic multiply of 0x5AFECA11 × 0xd9479692 × 0xb32c65c8 (divided by 2)
+    // then check the reminder of given selector
+    dup1                                // [<sel>, <sel>]
+    0x1B06F887F3D373D7DAC2CE88          // [<magic>, <sel>, <sel>]
+    mod                                 // [(magic % sel), <sel>]
+    delegate_to_impl_whole_mem jumpi    // [<sel>]
+
+    // check against each selector
+    dup1 __FUNC_SIG(contract_name) eq handle_contract_name jumpi
+    dup1 __FUNC_SIG(contract_version) eq handle_contract_version jumpi
+    0x5AFECA11 eq handle_safe_call jumpi
+
+    // Fall down to <delegate_to_impl_whole_mem>
+
+delegate_to_impl_whole_mem:
+    // Input stack:                     // [...]
+    DOUBLE_ZERO()                       // [0, 0, ...]
+    calldatasize ZERO()                 // [<args_ptr>, <args_sz>, 0, 0, ...]
+    [IMPLEMENTATION_SLOT]               // [<impl_slot>, <args_ptr>, <args_sz>, 0, 0, ...]
+    sload                               // [<addr>, <args_ptr>, <args_sz>, 0, 0, ...]
+    // Fall down to <delegate_to_addr_with_mem>
+
+delegate_to_addr_with_mem:
+    // Input stack:                     // [<addr>, <args_ptr>, <args_sz>, 0, 0]
+    gas                                 // [<gas>, <addr>, <args_ptr>, <args_sz>, 0, 0]
+    delegatecall                        // [<res>]
+    returndatasize                      // [<sz>, <res>]
+    DOUBLE_ZERO()                       // [0, 0, <sz>, <res>]
+    returndatacopy                      // [<res>]
+    return_call_result jumpi            // []
+
+    returndatasize ZERO()               // [0, <sz>]
+    revert
+
+return_call_result:
+    returndatasize ZERO()               // [0, <sz>]
+    return
+
+//  method "contract_name()"
+handle_contract_name:
+    // Input stack:                     // [<sel>]
+    PUSH_ARGS_FOR_RETURN_SHORT_MESSAGE(CONTRACT_NAME_STR, CONTRACT_NAME_LEN,
+        do_return_short_message)
+
+
+//  method "contract_version()"
+handle_contract_version:
+    // Input stack:                     // [<sel>]
+    PUSH_ARGS_FOR_RETURN_SHORT_MESSAGE(CONTRACT_VERSION_STR, CONTRACT_VERSION_LEN,
+        do_return_short_message)
+
+//  special method `SafeCall` (0x5AFECA11)
+handle_safe_call:
 
     // check SafeCall args: <0x5AFECA11(4)> <target(20)> <signature(65)> <payload...>
 
@@ -185,29 +239,8 @@ do_revert_wrong_arg:
     __FUNC_SIG(WrongArgument)           // [<__error_selector>, | ...]
     REVERT_ERROR_NO_ARGS()
 
-delegate_to_impl_whole_mem:
-    // Input stack:                     // []
-    DOUBLE_ZERO()                       // [0, 0]
-    calldatasize ZERO()                 // [<args_ptr>, <args_sz>, 0, 0]
-    [IMPLEMENTATION_SLOT]               // [<impl_slot>, <args_ptr>, <args_sz>, 0, 0]
-    sload                               // [<addr>, <args_ptr>, <args_sz>, 0, 0]
-    // Fall down to <delegate_to_addr_with_mem>
-
-delegate_to_addr_with_mem:
-    // Input stack:                     // [<addr>, <args_ptr>, <args_sz>, 0, 0]
-    gas                                 // [<gas>, <addr>, <args_ptr>, <args_sz>, 0, 0]
-    delegatecall                        // [<res>]
-    returndatasize                      // [<sz>, <res>]
-    DOUBLE_ZERO()                       // [0, 0, <sz>, <res>]
-    returndatacopy                      // [<res>]
-    return_result jumpi                 // []
-
-    returndatasize ZERO()               // [0, <sz>]
-    revert
-
-return_result:
-    returndatasize ZERO()               // [0, <sz>]
-    return
+do_return_short_message:
+    RETURN_SHORT_MESSAGE()
 
 // immutable locations table (2 bytes: push 0x02)
     __tablesize(IMMUTABLE_VARS__JUMP_TABLE)
